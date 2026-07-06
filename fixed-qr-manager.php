@@ -13,10 +13,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class Fixed_QR_Manager {
+    // 所有二维码配置存放在一个 option 中，避免为小型插件额外建表。
     const OPTION_KEY = 'fqm_qr_items';
+    // rewrite 规则会把 /qr/{slug}.png 映射到这个 query var。
     const QUERY_VAR  = 'fqm_qr_slug';
     const MENU_SLUG  = 'fixed-qr-manager';
 
+    /**
+     * 注册前台输出、后台管理和表单处理所需的 WordPress 钩子。
+     */
     public static function init() {
         add_action( 'init', array( __CLASS__, 'add_rewrite_rules' ) );
         add_filter( 'query_vars', array( __CLASS__, 'add_query_vars' ) );
@@ -28,15 +33,24 @@ final class Fixed_QR_Manager {
         add_action( 'admin_post_fqm_refresh_qr', array( __CLASS__, 'handle_refresh' ) );
     }
 
+    /**
+     * 插件启用时写入固定二维码图片 URL 的 rewrite 规则。
+     */
     public static function activate() {
         self::add_rewrite_rules();
         flush_rewrite_rules();
     }
 
+    /**
+     * 插件停用时刷新 rewrite 规则，移除 /qr/*.png 路由缓存。
+     */
     public static function deactivate() {
         flush_rewrite_rules();
     }
 
+    /**
+     * 固定图片地址格式：/qr/{slug}.png。
+     */
     public static function add_rewrite_rules() {
         add_rewrite_rule(
             '^qr/([^/]+)\.png$',
@@ -45,11 +59,20 @@ final class Fixed_QR_Manager {
         );
     }
 
+    /**
+     * 允许 WordPress 从 rewrite 规则中读取自定义 query var。
+     *
+     * @param array $vars 已注册的 query vars。
+     * @return array
+     */
     public static function add_query_vars( $vars ) {
         $vars[] = self::QUERY_VAR;
         return $vars;
     }
 
+    /**
+     * 在“设置”菜单下添加二维码管理页。
+     */
     public static function add_admin_menu() {
         add_options_page(
             '固定二维码管理',
@@ -60,20 +83,41 @@ final class Fixed_QR_Manager {
         );
     }
 
+    /**
+     * 读取所有二维码记录。
+     *
+     * @return array<string,array<string,string>>
+     */
     private static function get_items() {
         $items = get_option( self::OPTION_KEY, array() );
         return is_array( $items ) ? $items : array();
     }
 
+    /**
+     * 保存二维码记录，不自动加载到每个前台请求，减少 autoload 压力。
+     *
+     * @param array $items 二维码记录集合。
+     */
     private static function update_items( $items ) {
         update_option( self::OPTION_KEY, $items, false );
     }
 
+    /**
+     * 按 slug 读取单条二维码记录。
+     *
+     * @param string $slug 固定 URL 标识。
+     * @return array<string,string>|null
+     */
     private static function get_item( $slug ) {
         $items = self::get_items();
         return isset( $items[ $slug ] ) && is_array( $items[ $slug ] ) ? $items[ $slug ] : null;
     }
 
+    /**
+     * 获取并确保插件自己的上传缓存目录存在。
+     *
+     * @return array{dir:string,url:string}
+     */
     private static function get_upload_dir() {
         $upload = wp_upload_dir();
         $dir    = trailingslashit( $upload['basedir'] ) . 'fixed-qr-manager';
@@ -89,11 +133,22 @@ final class Fixed_QR_Manager {
         );
     }
 
+    /**
+     * 根据 slug 生成本地二维码 PNG 缓存路径。
+     *
+     * @param string $slug 固定 URL 标识。
+     * @return string
+     */
     private static function get_cache_path( $slug ) {
         $upload = self::get_upload_dir();
         return trailingslashit( $upload['dir'] ) . sanitize_file_name( $slug ) . '.png';
     }
 
+    /**
+     * 删除单个二维码缓存，下次访问时会重新生成。
+     *
+     * @param string $slug 固定 URL 标识。
+     */
     private static function delete_cache( $slug ) {
         $path = self::get_cache_path( $slug );
         if ( file_exists( $path ) ) {
@@ -101,10 +156,22 @@ final class Fixed_QR_Manager {
         }
     }
 
+    /**
+     * 返回前台可直接引用的固定二维码图片 URL。
+     *
+     * @param string $slug 固定 URL 标识。
+     * @return string
+     */
     private static function fixed_url( $slug ) {
         return home_url( '/qr/' . rawurlencode( $slug ) . '.png' );
     }
 
+    /**
+     * 统一生成后台管理页跳转地址，便于带状态消息返回。
+     *
+     * @param array<string,string> $extra 附加 query 参数。
+     * @return string
+     */
     private static function redirect_url( $extra = array() ) {
         return add_query_arg(
             array_merge(
@@ -115,6 +182,9 @@ final class Fixed_QR_Manager {
         );
     }
 
+    /**
+     * 处理新增或编辑二维码的后台表单提交。
+     */
     public static function handle_save() {
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( '权限不足。' );
@@ -156,6 +226,9 @@ final class Fixed_QR_Manager {
         exit;
     }
 
+    /**
+     * 处理后台删除二维码请求，同时清理本地缓存文件。
+     */
     public static function handle_delete() {
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( '权限不足。' );
@@ -176,6 +249,9 @@ final class Fixed_QR_Manager {
         exit;
     }
 
+    /**
+     * 手动刷新某个二维码缓存，适合远程生成失败后重试。
+     */
     public static function handle_refresh() {
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( '权限不足。' );
@@ -196,6 +272,9 @@ final class Fixed_QR_Manager {
         exit;
     }
 
+    /**
+     * 前台拦截 /qr/{slug}.png 请求，按需生成并输出 PNG 图片。
+     */
     public static function serve_qr_image() {
         $slug = get_query_var( self::QUERY_VAR );
         if ( ! $slug ) {
@@ -215,6 +294,7 @@ final class Fixed_QR_Manager {
 
         $path = self::get_cache_path( $slug );
 
+        // 缓存不存在或为空文件时才请求第三方服务，降低每次访问的外部依赖。
         if ( ! file_exists( $path ) || 0 === filesize( $path ) ) {
             $result = self::generate_qr_png( $slug, $item['content'] );
             if ( is_wp_error( $result ) ) {
@@ -235,6 +315,13 @@ final class Fixed_QR_Manager {
         exit;
     }
 
+    /**
+     * 调用 quickchart.io 生成二维码 PNG，并写入 uploads 缓存目录。
+     *
+     * @param string $slug    固定 URL 标识。
+     * @param string $content 二维码实际内容。
+     * @return true|WP_Error
+     */
     private static function generate_qr_png( $slug, $content ) {
         $path = self::get_cache_path( $slug );
 
@@ -279,6 +366,9 @@ final class Fixed_QR_Manager {
         return true;
     }
 
+    /**
+     * 根据跳转参数显示后台操作结果提示。
+     */
     private static function admin_notice_message() {
         if ( empty( $_GET['fqm_message'] ) ) {
             return;
@@ -302,6 +392,9 @@ final class Fixed_QR_Manager {
         }
     }
 
+    /**
+     * 渲染“设置 > 固定二维码”后台管理页面。
+     */
     public static function render_admin_page() {
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( '权限不足。' );
@@ -394,6 +487,7 @@ final class Fixed_QR_Manager {
     }
 }
 
+// 初始化插件，并在启用/停用时维护 rewrite 规则。
 Fixed_QR_Manager::init();
 register_activation_hook( __FILE__, array( 'Fixed_QR_Manager', 'activate' ) );
 register_deactivation_hook( __FILE__, array( 'Fixed_QR_Manager', 'deactivate' ) );
