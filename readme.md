@@ -18,6 +18,7 @@ https://example.com/qr/{slug}.png
 - 首次访问或刷新缓存时调用 `quickchart.io` 生成 PNG。
 - 生成后的 PNG 缓存在 `wp-content/uploads/fixed-qr-manager/`。
 - 后台列表提供二维码预览、固定 URL 复制、刷新缓存和删除操作。
+- 对 `/qr/{slug}.png` 增加请求路径兜底识别，降低 rewrite 未刷新导致 404 的概率。
 
 ## 安装
 
@@ -76,6 +77,7 @@ slug: pingan-bank
 1. 确认插件已经启用。
 2. 到“设置 > 固定链接”点击一次“保存更改”，手动刷新 rewrite 规则。
 3. 确认二维码列表里存在对应 `slug`。
+4. 如果响应是 HTML 页面，并且地址被跳转到 `/qr/{slug}.png/`，请更新到当前版本，插件会提前接管二维码图片请求并禁用这类 canonical 跳转。
 
 如果提示二维码生成失败：
 

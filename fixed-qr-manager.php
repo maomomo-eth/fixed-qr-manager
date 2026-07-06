@@ -25,7 +25,8 @@ final class Fixed_QR_Manager {
     public static function init() {
         add_action( 'init', array( __CLASS__, 'add_rewrite_rules' ) );
         add_filter( 'query_vars', array( __CLASS__, 'add_query_vars' ) );
-        add_action( 'template_redirect', array( __CLASS__, 'serve_qr_image' ) );
+        add_filter( 'redirect_canonical', array( __CLASS__, 'disable_canonical_redirect' ), 10, 2 );
+        add_action( 'template_redirect', array( __CLASS__, 'serve_qr_image' ), 0 );
 
         add_action( 'admin_menu', array( __CLASS__, 'add_admin_menu' ) );
         add_action( 'admin_post_fqm_save_qr', array( __CLASS__, 'handle_save' ) );
@@ -53,7 +54,7 @@ final class Fixed_QR_Manager {
      */
     public static function add_rewrite_rules() {
         add_rewrite_rule(
-            '^qr/([^/]+)\.png$',
+            '^qr/([^/]+)\.png/?$',
             'index.php?' . self::QUERY_VAR . '=$matches[1]',
             'top'
         );
@@ -183,6 +184,52 @@ final class Fixed_QR_Manager {
     }
 
     /**
+     * 从当前请求路径中识别 /qr/{slug}.png，作为 rewrite 未刷新时的兜底。
+     *
+     * @return string
+     */
+    private static function get_request_slug() {
+        if ( empty( $_SERVER['REQUEST_URI'] ) ) {
+            return '';
+        }
+
+        $request_path = wp_parse_url( esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ), PHP_URL_PATH );
+        $home_path    = wp_parse_url( home_url( '/' ), PHP_URL_PATH );
+
+        if ( ! is_string( $request_path ) ) {
+            return '';
+        }
+
+        $home_path = is_string( $home_path ) ? trim( $home_path, '/' ) : '';
+        $path      = trim( rawurldecode( $request_path ), '/' );
+
+        if ( '' !== $home_path && 0 === strpos( $path, $home_path . '/' ) ) {
+            $path = substr( $path, strlen( $home_path ) + 1 );
+        }
+
+        if ( preg_match( '#^qr/([^/]+)\.png/?$#', $path, $matches ) ) {
+            return sanitize_title( $matches[1] );
+        }
+
+        return '';
+    }
+
+    /**
+     * 二维码图片地址不走 WordPress canonical 跳转，避免被改成 /qr/*.png/。
+     *
+     * @param string|false $redirect_url 规范化后的跳转地址。
+     * @param string       $requested_url 当前请求地址。
+     * @return string|false
+     */
+    public static function disable_canonical_redirect( $redirect_url, $requested_url ) {
+        if ( self::get_request_slug() ) {
+            return false;
+        }
+
+        return $redirect_url;
+    }
+
+    /**
      * 处理新增或编辑二维码的后台表单提交。
      */
     public static function handle_save() {
@@ -277,6 +324,10 @@ final class Fixed_QR_Manager {
      */
     public static function serve_qr_image() {
         $slug = get_query_var( self::QUERY_VAR );
+        if ( ! $slug ) {
+            $slug = self::get_request_slug();
+        }
+
         if ( ! $slug ) {
             return;
         }
