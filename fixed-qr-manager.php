@@ -26,6 +26,7 @@ final class Fixed_QR_Manager {
         add_action( 'init', array( __CLASS__, 'add_rewrite_rules' ) );
         add_filter( 'query_vars', array( __CLASS__, 'add_query_vars' ) );
         add_filter( 'redirect_canonical', array( __CLASS__, 'disable_canonical_redirect' ), 10, 2 );
+        add_action( 'parse_request', array( __CLASS__, 'serve_qr_image_early' ), 0 );
         add_action( 'template_redirect', array( __CLASS__, 'serve_qr_image' ), 0 );
 
         add_action( 'admin_menu', array( __CLASS__, 'add_admin_menu' ) );
@@ -230,6 +231,27 @@ final class Fixed_QR_Manager {
     }
 
     /**
+     * 在 WordPress 主查询判定 404 前接管二维码图片请求。
+     *
+     * @param WP $wp 当前请求对象。
+     */
+    public static function serve_qr_image_early( $wp ) {
+        $slug = '';
+
+        if ( isset( $wp->query_vars[ self::QUERY_VAR ] ) ) {
+            $slug = $wp->query_vars[ self::QUERY_VAR ];
+        }
+
+        if ( ! $slug ) {
+            $slug = self::get_request_slug();
+        }
+
+        if ( $slug ) {
+            self::serve_qr_image_by_slug( $slug );
+        }
+    }
+
+    /**
      * 处理新增或编辑二维码的后台表单提交。
      */
     public static function handle_save() {
@@ -332,6 +354,15 @@ final class Fixed_QR_Manager {
             return;
         }
 
+        self::serve_qr_image_by_slug( $slug );
+    }
+
+    /**
+     * 按 slug 输出二维码 PNG，并确保响应状态与图片内容一致。
+     *
+     * @param string $slug 固定 URL 标识。
+     */
+    private static function serve_qr_image_by_slug( $slug ) {
         $slug = sanitize_title( $slug );
         $item = self::get_item( $slug );
 
@@ -357,8 +388,16 @@ final class Fixed_QR_Manager {
             }
         }
 
+        global $wp_query;
+        if ( $wp_query instanceof WP_Query ) {
+            $wp_query->is_404 = false;
+        }
+
         status_header( 200 );
+        http_response_code( 200 );
         header( 'Content-Type: image/png' );
+        header( 'Content-Disposition: inline; filename="' . sanitize_file_name( $slug ) . '.png"' );
+        header( 'Content-Length: ' . filesize( $path ) );
         header( 'Cache-Control: no-cache, no-store, must-revalidate, max-age=0' );
         header( 'Pragma: no-cache' );
         header( 'Expires: 0' );
