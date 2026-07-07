@@ -12,6 +12,10 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
+if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
+    require_once __DIR__ . '/vendor/autoload.php';
+}
+
 final class Fixed_QR_Manager {
     // 所有二维码配置存放在一个 option 中，避免为小型插件额外建表。
     const OPTION_KEY = 'fqm_qr_items';
@@ -30,6 +34,7 @@ final class Fixed_QR_Manager {
         add_action( 'template_redirect', array( __CLASS__, 'serve_qr_image' ), 0 );
 
         add_action( 'admin_menu', array( __CLASS__, 'add_admin_menu' ) );
+        add_action( 'admin_init', array( __CLASS__, 'generate_missing_qr_images' ) );
         add_action( 'admin_post_fqm_save_qr', array( __CLASS__, 'handle_save' ) );
         add_action( 'admin_post_fqm_delete_qr', array( __CLASS__, 'handle_delete' ) );
         add_action( 'admin_post_fqm_refresh_qr', array( __CLASS__, 'handle_refresh' ) );
@@ -41,6 +46,7 @@ final class Fixed_QR_Manager {
     public static function activate() {
         self::add_rewrite_rules();
         flush_rewrite_rules();
+        self::generate_missing_qr_images();
     }
 
     /**
@@ -86,6 +92,28 @@ final class Fixed_QR_Manager {
     }
 
     /**
+     * 为已有二维码补齐 /qr/*.png 缓存文件。
+     */
+    public static function generate_missing_qr_images() {
+        if ( is_admin() && ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        foreach ( self::get_items() as $slug => $item ) {
+            if ( empty( $item['content'] ) ) {
+                continue;
+            }
+
+            $path = self::get_cache_path( $slug );
+            if ( file_exists( $path ) && 0 < filesize( $path ) ) {
+                continue;
+            }
+
+            self::generate_qr_png( $slug, $item['content'] );
+        }
+    }
+
+    /**
      * 读取所有二维码记录。
      *
      * @return array<string,array<string,string>>
@@ -116,34 +144,28 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 获取并确保插件自己的上传缓存目录存在。
+     * 获取并确保公开二维码缓存目录存在。
      *
-     * @return array{dir:string,url:string}
+     * @return string
      */
-    private static function get_upload_dir() {
-        $upload = wp_upload_dir();
-        $dir    = trailingslashit( $upload['basedir'] ) . 'fixed-qr-manager';
-        $url    = trailingslashit( $upload['baseurl'] ) . 'fixed-qr-manager';
+    private static function get_cache_dir() {
+        $dir = trailingslashit( ABSPATH ) . 'qr';
 
         if ( ! file_exists( $dir ) ) {
             wp_mkdir_p( $dir );
         }
 
-        return array(
-            'dir' => $dir,
-            'url' => $url,
-        );
+        return $dir;
     }
 
     /**
-     * 根据 slug 生成本地二维码 PNG 缓存路径。
+     * 根据 slug 生成公开二维码 PNG 缓存路径。
      *
      * @param string $slug 固定 URL 标识。
      * @return string
      */
     private static function get_cache_path( $slug ) {
-        $upload = self::get_upload_dir();
-        return trailingslashit( $upload['dir'] ) . sanitize_file_name( $slug ) . '.png';
+        return trailingslashit( self::get_cache_dir() ) . sanitize_file_name( $slug ) . '.png';
     }
 
     /**
@@ -290,6 +312,11 @@ final class Fixed_QR_Manager {
 
         self::update_items( $items );
         self::delete_cache( $slug );
+        $result = self::generate_qr_png( $slug, $content );
+        if ( is_wp_error( $result ) ) {
+            wp_safe_redirect( self::redirect_url( array( 'fqm_message' => 'generate_failed', 'edit' => $slug ) ) );
+            exit;
+        }
 
         wp_safe_redirect( self::redirect_url( array( 'fqm_message' => 'saved', 'edit' => $slug ) ) );
         exit;
@@ -319,7 +346,7 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 手动刷新某个二维码缓存，适合远程生成失败后重试。
+     * 手动刷新某个二维码缓存。
      */
     public static function handle_refresh() {
         if ( ! current_user_can( 'manage_options' ) ) {
@@ -333,7 +360,11 @@ final class Fixed_QR_Manager {
             self::delete_cache( $slug );
             $item = self::get_item( $slug );
             if ( $item ) {
-                self::generate_qr_png( $slug, $item['content'] );
+                $result = self::generate_qr_png( $slug, $item['content'] );
+                if ( is_wp_error( $result ) ) {
+                    wp_safe_redirect( self::redirect_url( array( 'fqm_message' => 'generate_failed', 'edit' => $slug ) ) );
+                    exit;
+                }
             }
         }
 
@@ -376,7 +407,7 @@ final class Fixed_QR_Manager {
 
         $path = self::get_cache_path( $slug );
 
-        // 缓存不存在或为空文件时才请求第三方服务，降低每次访问的外部依赖。
+        // 缓存不存在或为空文件时按需本地生成。
         if ( ! file_exists( $path ) || 0 === filesize( $path ) ) {
             $result = self::generate_qr_png( $slug, $item['content'] );
             if ( is_wp_error( $result ) ) {
@@ -406,7 +437,7 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 调用 quickchart.io 生成二维码 PNG，并写入 uploads 缓存目录。
+     * 使用 chillerlan/php-qrcode 本地生成二维码 PNG，并写入站点根目录 /qr/。
      *
      * @param string $slug    固定 URL 标识。
      * @param string $content 二维码实际内容。
@@ -415,42 +446,37 @@ final class Fixed_QR_Manager {
     private static function generate_qr_png( $slug, $content ) {
         $path = self::get_cache_path( $slug );
 
-        $api_url = add_query_arg(
-            array(
-                'text'   => $content,
-                'size'   => 512,
-                'margin' => 2,
-                'ecLevel'=> 'M',
-                'format' => 'png',
-            ),
-            'https://quickchart.io/qr'
-        );
-
-        $response = wp_remote_get(
-            $api_url,
-            array(
-                'timeout'     => 20,
-                'redirection' => 2,
-                'headers'     => array(
-                    'Accept' => 'image/png',
-                ),
-            )
-        );
-
-        if ( is_wp_error( $response ) ) {
-            return $response;
+        if ( ! class_exists( '\chillerlan\QRCode\QRCode' ) || ! class_exists( '\chillerlan\QRCode\QROptions' ) ) {
+            return new WP_Error( 'fqm_qr_dependency_missing', '二维码生成依赖缺失，请确认插件 vendor 目录已完整上传。' );
         }
 
-        $code = wp_remote_retrieve_response_code( $response );
-        $body = wp_remote_retrieve_body( $response );
-
-        if ( 200 !== (int) $code || empty( $body ) ) {
-            return new WP_Error( 'fqm_qr_failed', '二维码生成失败，请检查服务器是否能访问 quickchart.io。' );
+        if ( ! extension_loaded( 'gd' ) ) {
+            return new WP_Error( 'fqm_qr_gd_missing', '二维码生成失败：服务器 PHP 未启用 gd 扩展。' );
         }
 
-        $saved = file_put_contents( $path, $body );
-        if ( false === $saved ) {
-            return new WP_Error( 'fqm_qr_save_failed', '二维码图片保存失败，请检查 uploads 目录权限。' );
+        $dir = self::get_cache_dir();
+        if ( ! is_dir( $dir ) || ! is_writable( $dir ) ) {
+            return new WP_Error( 'fqm_qr_save_failed', '二维码图片保存失败，请检查站点根目录 /qr/ 是否可写。' );
+        }
+
+        try {
+            $options = new \chillerlan\QRCode\QROptions(
+                array(
+                    'outputType'    => \chillerlan\QRCode\QRCode::OUTPUT_IMAGE_PNG,
+                    'eccLevel'      => \chillerlan\QRCode\QRCode::ECC_M,
+                    'scale'         => 12,
+                    'quietzoneSize' => 2,
+                    'imageBase64'   => false,
+                )
+            );
+
+            ( new \chillerlan\QRCode\QRCode( $options ) )->render( $content, $path );
+        } catch ( Throwable $e ) {
+            return new WP_Error( 'fqm_qr_failed', '二维码生成失败：' . $e->getMessage() );
+        }
+
+        if ( ! file_exists( $path ) || 0 === filesize( $path ) ) {
+            return new WP_Error( 'fqm_qr_save_failed', '二维码图片保存失败，请检查站点根目录 /qr/ 是否可写。' );
         }
 
         return true;
@@ -471,6 +497,7 @@ final class Fixed_QR_Manager {
             'refreshed' => array( 'updated', '已刷新二维码图片缓存。' ),
             'missing'   => array( 'error', '标题、slug、内容都不能为空。' ),
             'duplicate' => array( 'error', '这个 slug 已存在，请换一个。' ),
+            'generate_failed' => array( 'error', '二维码图片生成失败，请检查 PHP gd 扩展、vendor 目录和 /qr/ 目录权限。' ),
         );
 
         if ( isset( $map[ $message ] ) ) {
