@@ -1,6 +1,6 @@
 # Fixed QR Manager
 
-一个轻量级 WordPress 插件，用于在后台维护固定 URL 的二维码图片。
+一个轻量级 WordPress 插件，用于在后台维护固定 URL 的二维码图片和跳转链接。
 
 插件会把每个二维码绑定到固定图片地址：
 
@@ -8,17 +8,26 @@
 https://example.com/qr/{slug}.png
 ```
 
+同一个标识也提供无扩展名跳转地址：
+
+```text
+https://example.com/qr/{slug}
+```
+
+当二维码内容为 HTTP(S) 链接时，访问该地址会返回 `302 Found` 并跳转到二维码内容的链接。
+
 后续只修改二维码内容时，文章、页面或外部渠道里引用的图片 URL 不需要更换。
 
 ## 功能
 
 - 在 WordPress 后台“设置 > 固定二维码”中新增、编辑、删除二维码。
 - 每个二维码使用固定 `slug` 生成固定 PNG 地址。
+- 当二维码内容为 HTTP(S) 链接时，可通过 `/qr/{slug}` 固定地址直接 302 跳转。
 - 编辑已有二维码时锁定 `slug`，避免 URL 变化。
 - 使用 `chillerlan/php-qrcode` 在本机生成 PNG，不依赖第三方二维码服务。
 - 生成后的 PNG 缓存在站点根目录 `qr/`，真实文件路径为 `/qr/{slug}.png`。
 - 后台列表提供二维码预览、固定 URL 复制、刷新缓存和删除操作。
-- 对 `/qr/{slug}.png` 增加请求路径兜底识别，降低 rewrite 未刷新导致 404 的概率。
+- 对 `/qr/{slug}.png` 和 `/qr/{slug}` 增加请求路径兜底识别，降低 rewrite 未刷新导致 404 的概率。
 
 ## 安装
 
@@ -46,13 +55,14 @@ https://example.com/qr/{slug}.png
 ```text
 slug: pingan-bank
 固定图片 URL: https://example.com/qr/pingan-bank.png
+跳转 URL: https://example.com/qr/pingan-bank
 ```
 
 ## 字段说明
 
 - 标题：仅用于后台识别二维码。
 - 固定 URL 标识：用于生成 `/qr/{slug}.png`，创建后会锁定。
-- 二维码内容：实际编码进二维码的内容，可以是网址、文本或联系方式。
+- 二维码内容：实际编码进二维码的内容，可以是网址、文本或联系方式。内容为 HTTP(S) 链接时，无扩展名 URL 可用于 302 转跳。
 
 ## 审查结果
 
@@ -96,7 +106,7 @@ slug: pingan-bank
 主要逻辑集中在 `fixed-qr-manager.php`：
 
 - `init()`：注册前台路由、后台菜单和表单处理钩子。
-- `add_rewrite_rules()`：注册 `/qr/{slug}.png` 固定图片地址。
+- `add_rewrite_rules()`：注册 `/qr/{slug}.png` 图片和 `/qr/{slug}` 跳转地址。
 - `serve_qr_image()`：前台输出二维码 PNG。
 - `generate_qr_png()`：使用 `chillerlan/php-qrcode` 本地生成并缓存图片。
 - `render_admin_page()`：渲染后台管理页面。

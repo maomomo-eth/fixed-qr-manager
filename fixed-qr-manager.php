@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Fixed QR Manager
- * Description: 在后台管理二维码标题和内容，并通过固定 URL 动态输出二维码 PNG 图片。
- * Version: 1.0.0
+ * Description: 在后台管理二维码标题和内容，并通过固定 URL 输出二维码 PNG 图片或跳转链接。
+ * Version: 1.1.0
  * Author: MAOMOMO
  * License: GPL-2.0-or-later
  * Text Domain: fixed-qr-manager
@@ -19,8 +19,9 @@ if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
 final class Fixed_QR_Manager {
     // 所有二维码配置存放在一个 option 中，避免为小型插件额外建表。
     const OPTION_KEY = 'fqm_qr_items';
-    // rewrite 规则会把 /qr/{slug}.png 映射到这个 query var。
+    // rewrite 规则会把 /qr/{slug}.png 或 /qr/{slug} 映射到这些 query vars。
     const QUERY_VAR  = 'fqm_qr_slug';
+    const TYPE_VAR   = 'fqm_qr_type';
     const MENU_SLUG  = 'fixed-qr-manager';
 
     /**
@@ -41,7 +42,7 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 插件启用时写入固定二维码图片 URL 的 rewrite 规则。
+     * 插件启用时写入二维码图片和跳转链接的 rewrite 规则。
      */
     public static function activate() {
         self::add_rewrite_rules();
@@ -57,12 +58,17 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 固定图片地址格式：/qr/{slug}.png。
+     * 固定图片地址格式为 /qr/{slug}.png，跳转地址格式为 /qr/{slug}。
      */
     public static function add_rewrite_rules() {
         add_rewrite_rule(
             '^qr/([^/]+)\.png/?$',
-            'index.php?' . self::QUERY_VAR . '=$matches[1]',
+            'index.php?' . self::QUERY_VAR . '=$matches[1]&' . self::TYPE_VAR . '=image',
+            'top'
+        );
+        add_rewrite_rule(
+            '^qr/([^/]+)/?$',
+            'index.php?' . self::QUERY_VAR . '=$matches[1]&' . self::TYPE_VAR . '=redirect',
             'top'
         );
     }
@@ -75,6 +81,7 @@ final class Fixed_QR_Manager {
      */
     public static function add_query_vars( $vars ) {
         $vars[] = self::QUERY_VAR;
+        $vars[] = self::TYPE_VAR;
         return $vars;
     }
 
@@ -191,6 +198,16 @@ final class Fixed_QR_Manager {
     }
 
     /**
+     * 返回访问后直接跳转到二维码内容的固定 URL。
+     *
+     * @param string $slug 固定 URL 标识。
+     * @return string
+     */
+    private static function redirect_link_url( $slug ) {
+        return home_url( '/qr/' . rawurlencode( $slug ) );
+    }
+
+    /**
      * 统一生成后台管理页跳转地址，便于带状态消息返回。
      *
      * @param array<string,string> $extra 附加 query 参数。
@@ -207,20 +224,20 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 从当前请求路径中识别 /qr/{slug}.png，作为 rewrite 未刷新时的兜底。
+     * 从当前请求路径中识别二维码图片或跳转链接，作为 rewrite 未刷新时的兜底。
      *
-     * @return string
+     * @return array{slug:string,type:string}
      */
-    private static function get_request_slug() {
+    private static function get_request_route() {
         if ( empty( $_SERVER['REQUEST_URI'] ) ) {
-            return '';
+            return array( 'slug' => '', 'type' => '' );
         }
 
         $request_path = wp_parse_url( esc_url_raw( wp_unslash( $_SERVER['REQUEST_URI'] ) ), PHP_URL_PATH );
         $home_path    = wp_parse_url( home_url( '/' ), PHP_URL_PATH );
 
         if ( ! is_string( $request_path ) ) {
-            return '';
+            return array( 'slug' => '', 'type' => '' );
         }
 
         $home_path = is_string( $home_path ) ? trim( $home_path, '/' ) : '';
@@ -231,21 +248,26 @@ final class Fixed_QR_Manager {
         }
 
         if ( preg_match( '#^qr/([^/]+)\.png/?$#', $path, $matches ) ) {
-            return sanitize_title( $matches[1] );
+            return array( 'slug' => sanitize_title( $matches[1] ), 'type' => 'image' );
         }
 
-        return '';
+        if ( preg_match( '#^qr/([^/]+)/?$#', $path, $matches ) ) {
+            return array( 'slug' => sanitize_title( $matches[1] ), 'type' => 'redirect' );
+        }
+
+        return array( 'slug' => '', 'type' => '' );
     }
 
     /**
-     * 二维码图片地址不走 WordPress canonical 跳转，避免被改成 /qr/*.png/。
+     * 二维码图片和跳转地址不走 WordPress canonical 跳转，避免路径被改写。
      *
      * @param string|false $redirect_url 规范化后的跳转地址。
      * @param string       $requested_url 当前请求地址。
      * @return string|false
      */
     public static function disable_canonical_redirect( $redirect_url, $requested_url ) {
-        if ( self::get_request_slug() ) {
+        $route = self::get_request_route();
+        if ( $route['slug'] ) {
             return false;
         }
 
@@ -259,16 +281,29 @@ final class Fixed_QR_Manager {
      */
     public static function serve_qr_image_early( $wp ) {
         $slug = '';
+        $type = '';
 
         if ( isset( $wp->query_vars[ self::QUERY_VAR ] ) ) {
             $slug = $wp->query_vars[ self::QUERY_VAR ];
         }
 
-        if ( ! $slug ) {
-            $slug = self::get_request_slug();
+        if ( isset( $wp->query_vars[ self::TYPE_VAR ] ) ) {
+            $type = $wp->query_vars[ self::TYPE_VAR ];
         }
 
-        if ( $slug ) {
+        $route = self::get_request_route();
+        if ( ! $slug ) {
+            $slug = $route['slug'];
+        }
+        if ( ! $type ) {
+            $type = $route['type'];
+        }
+
+        if ( $slug && 'redirect' === $type ) {
+            self::redirect_by_slug( $slug );
+        }
+
+        if ( $slug && 'image' === $type ) {
             self::serve_qr_image_by_slug( $slug );
         }
     }
@@ -377,15 +412,52 @@ final class Fixed_QR_Manager {
      */
     public static function serve_qr_image() {
         $slug = get_query_var( self::QUERY_VAR );
+        $type = get_query_var( self::TYPE_VAR );
+        $route = self::get_request_route();
         if ( ! $slug ) {
-            $slug = self::get_request_slug();
+            $slug = $route['slug'];
+        }
+        if ( ! $type ) {
+            $type = $route['type'];
         }
 
-        if ( ! $slug ) {
+        if ( ! $slug || 'image' !== $type ) {
             return;
         }
 
         self::serve_qr_image_by_slug( $slug );
+    }
+
+    /**
+     * 按 slug 将无扩展名地址以 302 跳转到二维码内容中的 HTTP(S) 链接。
+     *
+     * @param string $slug 固定 URL 标识。
+     */
+    private static function redirect_by_slug( $slug ) {
+        $slug = sanitize_title( $slug );
+        $item = self::get_item( $slug );
+
+        if ( ! $item ) {
+            status_header( 404 );
+            nocache_headers();
+            header( 'Content-Type: text/plain; charset=utf-8' );
+            echo 'QR not found';
+            exit;
+        }
+
+        $target = esc_url_raw( trim( $item['content'] ), array( 'http', 'https' ) );
+        $parts  = $target ? wp_parse_url( $target ) : false;
+        if ( ! is_array( $parts ) || empty( $parts['host'] ) || empty( $parts['scheme'] ) ) {
+            status_header( 400 );
+            nocache_headers();
+            header( 'Content-Type: text/plain; charset=utf-8' );
+            echo '二维码内容不是有效的 HTTP(S) 链接，无法跳转。';
+            exit;
+        }
+
+        nocache_headers();
+        wp_redirect( $target, 302, 'Fixed QR Manager' );
+        exit;
     }
 
     /**
@@ -525,7 +597,7 @@ final class Fixed_QR_Manager {
         ?>
         <div class="wrap">
             <h1>固定二维码管理</h1>
-            <p>每个二维码都有一个固定图片 URL。后续只改标题或内容，文章里引用的图片 URL 不需要改。</p>
+            <p>每个二维码都有固定图片 URL；当内容为 HTTP(S) 链接时，也可使用无扩展名 URL 直接 302 跳转。后续只改标题或内容，两个 URL 都不需要改。</p>
 
             <h2><?php echo $editing ? '编辑二维码' : '新增二维码'; ?></h2>
             <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="max-width: 820px;">
@@ -552,7 +624,7 @@ final class Fixed_QR_Manager {
                         <th scope="row"><label for="fqm-content">二维码内容</label></th>
                         <td>
                             <textarea name="content" id="fqm-content" rows="6" class="large-text code" required><?php echo esc_textarea( $editing ? $editing['content'] : '' ); ?></textarea>
-                            <p class="description">可以是网址、文本、联系方式等。保存后旧 URL 输出新二维码。</p>
+                            <p class="description">可以是网址、文本、联系方式等。若填写 HTTP(S) 链接，访问无扩展名 URL 会 302 跳转到该链接。</p>
                         </td>
                     </tr>
                 </table>
@@ -571,6 +643,7 @@ final class Fixed_QR_Manager {
                     <tr>
                         <th>标题</th>
                         <th>固定图片 URL</th>
+                        <th>跳转 URL</th>
                         <th>更新时间</th>
                         <th style="width:160px;">预览</th>
                         <th>操作</th>
@@ -578,14 +651,20 @@ final class Fixed_QR_Manager {
                 </thead>
                 <tbody>
                     <?php if ( empty( $items ) ) : ?>
-                        <tr><td colspan="5">还没有二维码。</td></tr>
+                        <tr><td colspan="6">还没有二维码。</td></tr>
                     <?php else : ?>
                         <?php foreach ( $items as $slug => $item ) : ?>
-                            <?php $url = self::fixed_url( $slug ); ?>
+                            <?php
+                            $url          = self::fixed_url( $slug );
+                            $redirect_url = self::redirect_link_url( $slug );
+                            ?>
                             <tr>
                                 <td><strong><?php echo esc_html( $item['title'] ); ?></strong><br><code><?php echo esc_html( $slug ); ?></code></td>
                                 <td>
                                     <input type="text" class="large-text code" readonly value="<?php echo esc_attr( $url ); ?>" onclick="this.select();">
+                                </td>
+                                <td>
+                                    <input type="text" class="large-text code" readonly value="<?php echo esc_attr( $redirect_url ); ?>" onclick="this.select();">
                                 </td>
                                 <td><?php echo esc_html( isset( $item['updated_at'] ) ? $item['updated_at'] : '' ); ?></td>
                                 <td><img src="<?php echo esc_url( $url ); ?>" alt="<?php echo esc_attr( $item['title'] ); ?>" style="width:120px;height:120px;border:1px solid #ccd0d4;background:#fff;"></td>
