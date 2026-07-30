@@ -1,10 +1,14 @@
 <?php
 /**
  * Plugin Name: Fixed QR Manager
+ * Plugin URI: https://github.com/maomomo-eth/fixed-qr-manager
  * Description: 在后台管理二维码标题和内容，并通过固定 URL 输出二维码 PNG 图片或跳转链接。
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: MAOMOMO
  * License: GPL-2.0-or-later
+ * Requires at least: 5.8
+ * Requires PHP: 7.4
+ * Update URI: https://github.com/maomomo-eth/fixed-qr-manager
  * Text Domain: fixed-qr-manager
  */
 
@@ -15,6 +19,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 if ( file_exists( __DIR__ . '/vendor/autoload.php' ) ) {
     require_once __DIR__ . '/vendor/autoload.php';
 }
+
+require_once __DIR__ . '/lib/plugin-update-checker/plugin-update-checker.php';
+require_once __DIR__ . '/includes/class-fixed-qr-manager-github-updater.php';
+
+Fixed_QR_Manager_GitHub_Updater::init( __FILE__ );
 
 final class Fixed_QR_Manager {
     // 所有二维码配置存放在一个 option 中，避免为小型插件额外建表。

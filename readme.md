@@ -28,6 +28,7 @@ https://example.com/qr/{slug}
 - 生成后的 PNG 缓存在站点根目录 `qr/`，真实文件路径为 `/qr/{slug}.png`。
 - 后台列表提供二维码预览、固定 URL 复制、刷新缓存和删除操作。
 - 对 `/qr/{slug}.png` 和 `/qr/{slug}` 增加请求路径兜底识别，降低 rewrite 未刷新导致 404 的概率。
+- 支持通过 GitHub 正式 Release 在 WordPress 后台检查和安装插件更新。
 
 ## 安装
 
@@ -40,8 +41,9 @@ https://example.com/qr/{slug}
 
 3. 在 WordPress 后台“插件”页面启用 `Fixed QR Manager`。
 4. 确认插件目录中的 `vendor/` 已完整上传。
-5. 确认 PHP 已启用 `gd` 和 `mbstring` 扩展。
-6. 启用后插件会刷新 rewrite 规则，正常情况下无需手动保存固定链接。
+5. 确认插件目录中的 `lib/plugin-update-checker/` 已完整上传，用于后台更新检查。
+6. 确认 PHP 已启用 `gd` 和 `mbstring` 扩展。
+7. 启用后插件会刷新 rewrite 规则，正常情况下无需手动保存固定链接。
 
 ## 使用
 
@@ -101,6 +103,17 @@ slug: pingan-bank
 1. 检查 WordPress 站点根目录是否可写。
 2. 检查 `qr/` 是否可创建或可写。
 
+## 更新发布
+
+插件通过 GitHub 正式 Release 向 WordPress 后台提供更新：
+
+1. 更新 `fixed-qr-manager.php` 插件头中的 `Version`。
+2. 打包 ZIP 时确保根目录名为 `fixed-qr-manager`，并包含 `vendor/` 和 `lib/plugin-update-checker/`。
+3. 在 GitHub 创建非 pre-release 的正式 Release。
+4. 上传附件，文件名必须是 `fixed-qr-manager.zip`。
+
+更新器只检查最新正式 Release，并要求 Release 带有这个 ZIP 附件；没有附件或附件名不匹配时，WordPress 后台不会安装更新。
+
 ## 开发说明
 
 主要逻辑集中在 `fixed-qr-manager.php`：
@@ -110,6 +123,7 @@ slug: pingan-bank
 - `serve_qr_image()`：前台输出二维码 PNG。
 - `generate_qr_png()`：使用 `chillerlan/php-qrcode` 本地生成并缓存图片。
 - `render_admin_page()`：渲染后台管理页面。
+- `includes/class-fixed-qr-manager-github-updater.php`：接入 GitHub Release 更新检查。
 
 ## 兼容性
 
