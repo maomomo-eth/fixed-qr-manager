@@ -3,7 +3,7 @@
  * Plugin Name: Fixed QR Manager
  * Plugin URI: https://github.com/maomomo-eth/fixed-qr-manager
  * Description: 在后台管理二维码标题和内容，并通过固定 URL 输出二维码 PNG 图片或跳转链接。
- * Version: 1.3.4
+ * Version: 1.3.5
  * Author: MAOMOMO
  * License: GPL-2.0-or-later
  * Requires at least: 5.8
@@ -479,13 +479,14 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 输出跳转检测页，由浏览器端综合判断微信环境后决定引导或跳转。
+     * 输出跳转检测页，优先使用浏览器 UA 判断微信环境。
      *
      * @param string $target 实际跳转目标。
      */
     private static function render_redirect_detection_page( $target ) {
-        $debug_user_agent = isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '（未提供）';
-        $target_json      = wp_json_encode( $target, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT );
+        $php_user_agent      = isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '';
+        $target_json         = wp_json_encode( $target, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT );
+        $php_user_agent_json = wp_json_encode( $php_user_agent, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT );
 
         status_header( 200 );
         nocache_headers();
@@ -536,8 +537,9 @@ final class Fixed_QR_Manager {
                     <?php if ( self::is_debug_mode() ) : ?>
                         <details class="debug" open>
                             <summary>调试信息</summary>
-                            <p>请求 UA：<?php echo esc_html( $debug_user_agent ); ?></p>
-                            <p id="fqm-client-ua">浏览器 UA：检测中…</p>
+                            <p>PHP 获取的 UA：<?php echo esc_html( $php_user_agent ? $php_user_agent : '（未提供）' ); ?></p>
+                            <p id="fqm-js-ua">JS 获取的 UA：检测中…</p>
+                            <p id="fqm-detection-source">判断依据：检测中…</p>
                         </details>
                     <?php endif; ?>
                 </section>
@@ -548,15 +550,29 @@ final class Fixed_QR_Manager {
             <script>
             (function () {
                 var target = <?php echo $target_json; ?>;
-                var ua = navigator.userAgent || '';
-                var normalizedUa = ua.toLowerCase();
+                var phpUserAgent = <?php echo $php_user_agent_json; ?>;
+                var jsUserAgent = '';
                 var loading = document.getElementById('fqm-loading');
                 var guide = document.getElementById('fqm-guide');
-                var clientUa = document.getElementById('fqm-client-ua');
+                var jsUaElement = document.getElementById('fqm-js-ua');
+                var detectionSource = document.getElementById('fqm-detection-source');
                 var completed = false;
 
-                if (clientUa) {
-                    clientUa.textContent = '浏览器 UA：' + (ua || '（未提供）');
+                try {
+                    if (typeof navigator !== 'undefined' && typeof navigator.userAgent === 'string') {
+                        jsUserAgent = navigator.userAgent;
+                    }
+                } catch (ignore) {}
+
+                var userAgent = jsUserAgent || phpUserAgent || '';
+                var userAgentSource = jsUserAgent ? 'JS 获取的 UA' : 'PHP 获取的 UA（JS UA 不可用）';
+
+                if (jsUaElement) {
+                    jsUaElement.textContent = 'JS 获取的 UA：' + (jsUserAgent || '（未提供）');
+                }
+
+                if (detectionSource) {
+                    detectionSource.textContent = '判断依据：' + userAgentSource;
                 }
 
                 function redirectToTarget() {
@@ -574,71 +590,12 @@ final class Fixed_QR_Manager {
                     completed = true;
                     loading.hidden = true;
                     guide.hidden = false;
-                    try {
-                        window.localStorage.setItem('fqm_wechat_confirmed', '1');
-                    } catch (ignore) {}
                 }
 
-                function hasWechatUa() {
-                    return /micromessenger\/[\d.]+/.test(normalizedUa)
-                        && normalizedUa.indexOf('miniprogram') === -1
-                        && normalizedUa.indexOf('wxwork') === -1;
-                }
-
-                function confirmWithBridge() {
-                    if (completed) {
-                        return false;
-                    }
-
-                    if (!window.WeixinJSBridge || typeof window.WeixinJSBridge.invoke !== 'function') {
-                        return false;
-                    }
-
-                    try {
-                        window.WeixinJSBridge.invoke('getNetworkType', {}, function (response) {
-                            var message = response && response.err_msg ? response.err_msg.toLowerCase() : '';
-                            if (message.indexOf(':fail') !== -1 || message.indexOf(':cancel') !== -1) {
-                                redirectToTarget();
-                                return;
-                            }
-                            showWechatGuide();
-                        });
-                    } catch (ignore) {
-                        redirectToTarget();
-                    }
-
-                    return true;
-                }
-
-                function showGuideIfStillWaiting() {
-                    window.setTimeout(function () {
-                        if (!completed) {
-                            showWechatGuide();
-                        }
-                    }, 2500);
-                }
-
-                if (!hasWechatUa()) {
-                    redirectToTarget();
-                    return;
-                }
-
-                try {
-                    if (window.localStorage.getItem('fqm_wechat_confirmed') === '1') {
-                        showWechatGuide();
-                        return;
-                    }
-                } catch (ignore) {}
-
-                if (confirmWithBridge()) {
-                    showGuideIfStillWaiting();
+                if (userAgent.toLowerCase().indexOf('micromessenger') !== -1) {
+                    showWechatGuide();
                 } else {
-                    document.addEventListener('WeixinJSBridgeReady', function () {
-                        if (confirmWithBridge()) {
-                            showGuideIfStillWaiting();
-                        }
-                    }, false);
-                    window.setTimeout(redirectToTarget, 2500);
+                    redirectToTarget();
                 }
             }());
             </script>
@@ -649,7 +606,7 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 按 slug 输出跳转检测页，由浏览器决定显示微信引导或跳转到 HTTP(S) 链接。
+     * 按 slug 输出跳转检测页，按 UA 显示微信引导或跳转到 HTTP(S) 链接。
      *
      * @param string $slug 固定 URL 标识。
      */

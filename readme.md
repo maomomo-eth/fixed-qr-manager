@@ -14,7 +14,7 @@ https://example.com/qr/{slug}.png
 https://example.com/qr/{slug}
 ```
 
-当二维码内容为 HTTP(S) 链接时，二维码会编码为该固定跳转地址。访问或扫码后，插件会在浏览器端结合 UA、微信 JS Bridge 和已确认环境缓存识别微信内置浏览器：微信内置浏览器显示“在浏览器打开”引导，其他浏览器自动跳转到二维码内容的链接。
+当二维码内容为 HTTP(S) 链接时，二维码会编码为该固定跳转地址。访问或扫码后，插件优先使用浏览器 JavaScript 获取的 UA 判断微信内置浏览器；JavaScript UA 不可用时才回退到 PHP 获取的 UA。UA 包含 `MicroMessenger` 时显示“在浏览器打开”引导，其他浏览器自动跳转到二维码内容的链接。
 
 后续只修改二维码内容时，文章、页面或外部渠道里引用的图片 URL 不需要更换。
 
@@ -22,7 +22,7 @@ https://example.com/qr/{slug}
 
 - 在 WordPress 后台“设置 > 固定二维码”中新增、编辑、删除二维码。
 - 每个二维码使用固定 `slug` 生成固定 PNG 地址。
-- 当二维码内容为 HTTP(S) 链接时，二维码和 `/qr/{slug}` 都会经过固定跳转入口；通过 UA、微信 JS Bridge 和已确认环境缓存综合识别微信内置浏览器，避免部分安卓默认浏览器携带微信 UA 时被误判；微信内置浏览器会引导用户点击右上角菜单并选择“在浏览器打开”，其他浏览器自动跳转。
+- 当二维码内容为 HTTP(S) 链接时，二维码和 `/qr/{slug}` 都会经过固定跳转入口；优先用 JavaScript UA 判断，JavaScript UA 不可用时回退到 PHP UA；UA 包含 `MicroMessenger` 时引导用户点击右上角菜单并选择“在浏览器打开”，其他浏览器自动跳转。
 - 编辑已有二维码时锁定 `slug`，避免 URL 变化。
 - 使用 `chillerlan/php-qrcode` 在本机生成 PNG，不依赖第三方二维码服务。
 - 生成后的 PNG 缓存在站点根目录 `qr/`，真实文件路径为 `/qr/{slug}.png`。
@@ -91,7 +91,7 @@ slug: pingan-bank
 define( 'FQM_DEBUG_MODE', true );
 ```
 
-启用后，微信打开 `/qr/{slug}` 时的引导页会显示本次请求的 UA。排查完成后删除该配置或改为 `false`，避免对访客公开浏览器信息。
+启用后，微信打开 `/qr/{slug}` 时的引导页会同时显示 PHP 获取的 UA、JavaScript 获取的 UA，以及实际采用的判断来源。排查完成后删除该配置或改为 `false`，避免对访客公开浏览器信息。
 
 ## 故障排查
 
