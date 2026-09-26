@@ -3,7 +3,7 @@
  * Plugin Name: Fixed QR Manager
  * Plugin URI: https://github.com/maomomo-eth/fixed-qr-manager
  * Description: 在后台管理二维码标题和内容，并通过固定 URL 输出二维码 PNG 图片或跳转链接。
- * Version: 1.2.0
+ * Version: 1.3.4
  * Author: MAOMOMO
  * License: GPL-2.0-or-later
  * Requires at least: 5.8
@@ -28,6 +28,9 @@ Fixed_QR_Manager_GitHub_Updater::init( __FILE__ );
 final class Fixed_QR_Manager {
     // 所有二维码配置存放在一个 option 中，避免为小型插件额外建表。
     const OPTION_KEY = 'fqm_qr_items';
+    // 二维码编码规则版本，用于在规则调整后一次性重建已有 PNG 缓存。
+    const QR_CONTENT_VERSION_OPTION = 'fqm_qr_content_version';
+    const QR_CONTENT_VERSION        = '2';
     // rewrite 规则会把 /qr/{slug}.png 或 /qr/{slug} 映射到这些 query vars。
     const QUERY_VAR  = 'fqm_qr_slug';
     const TYPE_VAR   = 'fqm_qr_type';
@@ -115,17 +118,27 @@ final class Fixed_QR_Manager {
             return;
         }
 
+        // 旧版 HTTP(S) 二维码直接编码目标链接；本版改为编码固定跳转地址。
+        $force_regenerate = self::QR_CONTENT_VERSION !== get_option( self::QR_CONTENT_VERSION_OPTION, '' );
+
         foreach ( self::get_items() as $slug => $item ) {
             if ( empty( $item['content'] ) ) {
                 continue;
             }
 
             $path = self::get_cache_path( $slug );
-            if ( file_exists( $path ) && 0 < filesize( $path ) ) {
+            if ( ! $force_regenerate && file_exists( $path ) && 0 < filesize( $path ) ) {
                 continue;
             }
 
-            self::generate_qr_png( $slug, $item['content'] );
+            if ( is_wp_error( self::generate_qr_png( $slug, $item['content'] ) ) ) {
+                // 生成失败时不记录版本，以便管理员修复环境后自动重试。
+                return;
+            }
+        }
+
+        if ( $force_regenerate ) {
+            update_option( self::QR_CONTENT_VERSION_OPTION, self::QR_CONTENT_VERSION, false );
         }
     }
 
@@ -438,7 +451,205 @@ final class Fixed_QR_Manager {
     }
 
     /**
-     * 按 slug 将无扩展名地址以 302 跳转到二维码内容中的 HTTP(S) 链接。
+     * 从二维码内容中获取可安全跳转的 HTTP(S) 链接。
+     *
+     * @param string $content 二维码内容。
+     * @return string
+     */
+    private static function get_http_redirect_target( $content ) {
+        $target = esc_url_raw( trim( $content ), array( 'http', 'https' ) );
+        $parts  = $target ? wp_parse_url( $target ) : false;
+
+        if ( ! is_array( $parts ) || empty( $parts['host'] ) || empty( $parts['scheme'] ) ) {
+            return '';
+        }
+
+        return $target;
+    }
+
+    /**
+     * 判断是否启用前台调试信息输出。
+     *
+     * 在 wp-config.php 中定义 FQM_DEBUG_MODE 为 true 后生效。
+     *
+     * @return bool
+     */
+    private static function is_debug_mode() {
+        return defined( 'FQM_DEBUG_MODE' ) && FQM_DEBUG_MODE;
+    }
+
+    /**
+     * 输出跳转检测页，由浏览器端综合判断微信环境后决定引导或跳转。
+     *
+     * @param string $target 实际跳转目标。
+     */
+    private static function render_redirect_detection_page( $target ) {
+        $debug_user_agent = isset( $_SERVER['HTTP_USER_AGENT'] ) ? (string) wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) : '（未提供）';
+        $target_json      = wp_json_encode( $target, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT );
+
+        status_header( 200 );
+        nocache_headers();
+        header( 'Content-Type: text/html; charset=utf-8' );
+        ?>
+        <!doctype html>
+        <html lang="zh-CN">
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+            <meta name="robots" content="noindex, nofollow">
+            <title>请使用默认浏览器打开</title>
+            <style>
+                * { box-sizing: border-box; }
+                body { margin: 0; min-height: 100vh; background: #f5f7fa; color: #1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+                main { width: min(100% - 40px, 440px); margin: 0 auto; padding: max(76px, env(safe-area-inset-top)) 0 48px; text-align: center; }
+                .arrow { position: absolute; top: max(16px, env(safe-area-inset-top)); right: 28px; color: #07c160; font-size: 42px; font-weight: 700; line-height: 1; transform: rotate(18deg); }
+                .card { padding: 36px 26px; background: #fff; border-radius: 20px; box-shadow: 0 10px 30px rgba(31, 41, 55, .08); }
+                .dots { display: inline-flex; align-items: center; justify-content: center; width: 60px; height: 60px; margin-bottom: 20px; border-radius: 50%; background: #eaf9f0; color: #07c160; font-size: 32px; font-weight: 700; letter-spacing: 2px; }
+                h1 { margin: 0 0 14px; font-size: 23px; line-height: 1.4; }
+                p { margin: 0; color: #667085; font-size: 16px; line-height: 1.8; }
+                .steps { margin: 24px 0 0; padding: 18px 18px 18px 38px; border-radius: 12px; background: #f5fbf7; color: #344054; text-align: left; font-size: 15px; line-height: 1.9; }
+                strong { color: #07a652; }
+                .loading { margin-top: 18px; font-size: 14px; }
+                .debug { margin-top: 18px; padding: 14px; border-radius: 12px; background: #fff8e8; color: #7a5600; text-align: left; font-size: 13px; line-height: 1.6; }
+                .debug summary { cursor: pointer; font-weight: 600; }
+                .debug p { margin: 8px 0 0; color: inherit; font-size: inherit; overflow-wrap: anywhere; }
+                [hidden] { display: none; }
+            </style>
+        </head>
+        <body>
+            <span class="arrow" aria-hidden="true">↗</span>
+            <main>
+                <section class="card">
+                    <div class="dots" aria-hidden="true">···</div>
+                    <div id="fqm-loading">
+                        <h1>正在打开页面</h1>
+                        <p class="loading">正在识别访问环境，请稍候…</p>
+                    </div>
+                    <div id="fqm-guide" hidden>
+                        <h1>请使用默认浏览器打开</h1>
+                        <p>当前内容不支持在微信内直接访问。</p>
+                        <ol class="steps">
+                            <li>点击右上角的<strong>“···”</strong>菜单</li>
+                            <li>选择<strong>“在浏览器打开”</strong>后继续访问</li>
+                        </ol>
+                    </div>
+                    <?php if ( self::is_debug_mode() ) : ?>
+                        <details class="debug" open>
+                            <summary>调试信息</summary>
+                            <p>请求 UA：<?php echo esc_html( $debug_user_agent ); ?></p>
+                            <p id="fqm-client-ua">浏览器 UA：检测中…</p>
+                        </details>
+                    <?php endif; ?>
+                </section>
+            </main>
+            <noscript>
+                <p style="padding: 0 20px; text-align: center;">请启用 JavaScript 后重试，或<a href="<?php echo esc_url( $target ); ?>">直接继续访问</a>。</p>
+            </noscript>
+            <script>
+            (function () {
+                var target = <?php echo $target_json; ?>;
+                var ua = navigator.userAgent || '';
+                var normalizedUa = ua.toLowerCase();
+                var loading = document.getElementById('fqm-loading');
+                var guide = document.getElementById('fqm-guide');
+                var clientUa = document.getElementById('fqm-client-ua');
+                var completed = false;
+
+                if (clientUa) {
+                    clientUa.textContent = '浏览器 UA：' + (ua || '（未提供）');
+                }
+
+                function redirectToTarget() {
+                    if (!completed) {
+                        completed = true;
+                        window.location.replace(target);
+                    }
+                }
+
+                function showWechatGuide() {
+                    if (completed) {
+                        return;
+                    }
+
+                    completed = true;
+                    loading.hidden = true;
+                    guide.hidden = false;
+                    try {
+                        window.localStorage.setItem('fqm_wechat_confirmed', '1');
+                    } catch (ignore) {}
+                }
+
+                function hasWechatUa() {
+                    return /micromessenger\/[\d.]+/.test(normalizedUa)
+                        && normalizedUa.indexOf('miniprogram') === -1
+                        && normalizedUa.indexOf('wxwork') === -1;
+                }
+
+                function confirmWithBridge() {
+                    if (completed) {
+                        return false;
+                    }
+
+                    if (!window.WeixinJSBridge || typeof window.WeixinJSBridge.invoke !== 'function') {
+                        return false;
+                    }
+
+                    try {
+                        window.WeixinJSBridge.invoke('getNetworkType', {}, function (response) {
+                            var message = response && response.err_msg ? response.err_msg.toLowerCase() : '';
+                            if (message.indexOf(':fail') !== -1 || message.indexOf(':cancel') !== -1) {
+                                redirectToTarget();
+                                return;
+                            }
+                            showWechatGuide();
+                        });
+                    } catch (ignore) {
+                        redirectToTarget();
+                    }
+
+                    return true;
+                }
+
+                function showGuideIfStillWaiting() {
+                    window.setTimeout(function () {
+                        if (!completed) {
+                            showWechatGuide();
+                        }
+                    }, 2500);
+                }
+
+                if (!hasWechatUa()) {
+                    redirectToTarget();
+                    return;
+                }
+
+                try {
+                    if (window.localStorage.getItem('fqm_wechat_confirmed') === '1') {
+                        showWechatGuide();
+                        return;
+                    }
+                } catch (ignore) {}
+
+                if (confirmWithBridge()) {
+                    showGuideIfStillWaiting();
+                } else {
+                    document.addEventListener('WeixinJSBridgeReady', function () {
+                        if (confirmWithBridge()) {
+                            showGuideIfStillWaiting();
+                        }
+                    }, false);
+                    window.setTimeout(redirectToTarget, 2500);
+                }
+            }());
+            </script>
+        </body>
+        </html>
+        <?php
+        exit;
+    }
+
+    /**
+     * 按 slug 输出跳转检测页，由浏览器决定显示微信引导或跳转到 HTTP(S) 链接。
      *
      * @param string $slug 固定 URL 标识。
      */
@@ -454,9 +665,8 @@ final class Fixed_QR_Manager {
             exit;
         }
 
-        $target = esc_url_raw( trim( $item['content'] ), array( 'http', 'https' ) );
-        $parts  = $target ? wp_parse_url( $target ) : false;
-        if ( ! is_array( $parts ) || empty( $parts['host'] ) || empty( $parts['scheme'] ) ) {
+        $target = self::get_http_redirect_target( $item['content'] );
+        if ( ! $target ) {
             status_header( 400 );
             nocache_headers();
             header( 'Content-Type: text/plain; charset=utf-8' );
@@ -464,9 +674,7 @@ final class Fixed_QR_Manager {
             exit;
         }
 
-        nocache_headers();
-        wp_redirect( $target, 302, 'Fixed QR Manager' );
-        exit;
+        self::render_redirect_detection_page( $target );
     }
 
     /**
@@ -551,7 +759,9 @@ final class Fixed_QR_Manager {
                 )
             );
 
-            ( new \chillerlan\QRCode\QRCode( $options ) )->render( $content, $path );
+            // HTTP(S) 内容编码为本插件的固定跳转地址，使扫码和直接访问都能经过微信浏览器检测。
+            $qr_content = self::get_http_redirect_target( $content ) ? self::redirect_link_url( $slug ) : $content;
+            ( new \chillerlan\QRCode\QRCode( $options ) )->render( $qr_content, $path );
         } catch ( Throwable $e ) {
             return new WP_Error( 'fqm_qr_failed', '二维码生成失败：' . $e->getMessage() );
         }
@@ -606,7 +816,7 @@ final class Fixed_QR_Manager {
         ?>
         <div class="wrap">
             <h1>固定二维码管理</h1>
-            <p>每个二维码都有固定图片 URL；当内容为 HTTP(S) 链接时，也可使用无扩展名 URL 直接 302 跳转。后续只改标题或内容，两个 URL 都不需要改。</p>
+            <p>每个二维码都有固定图片 URL；当内容为 HTTP(S) 链接时，也可使用无扩展名 URL，经浏览器环境检测后跳转。后续只改标题或内容，两个 URL 都不需要改。</p>
 
             <h2><?php echo $editing ? '编辑二维码' : '新增二维码'; ?></h2>
             <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="max-width: 820px;">
@@ -633,7 +843,7 @@ final class Fixed_QR_Manager {
                         <th scope="row"><label for="fqm-content">二维码内容</label></th>
                         <td>
                             <textarea name="content" id="fqm-content" rows="6" class="large-text code" required><?php echo esc_textarea( $editing ? $editing['content'] : '' ); ?></textarea>
-                            <p class="description">可以是网址、文本、联系方式等。若填写 HTTP(S) 链接，访问无扩展名 URL 会 302 跳转到该链接。</p>
+                            <p class="description">可以是网址、文本、联系方式等。若填写 HTTP(S) 链接，访问无扩展名 URL 会先检测浏览器环境，再跳转到该链接。</p>
                         </td>
                     </tr>
                 </table>
